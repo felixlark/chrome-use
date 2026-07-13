@@ -47,6 +47,10 @@ function normalizeUrl(value) {
   }
 }
 
+async function delay(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function getSessionRuntime(sessionState, fallbackCdp) {
   const activeCdp = sessionState?.cdp || fallbackCdp;
   const sessionId =
@@ -204,6 +208,63 @@ async function clickSelector(runtime, sessionState, selector) {
   assertCondition(result?.clicked, `Failed to click selector ${selector}.`, result);
 }
 
+async function dragSelectorByOffset(runtime, sessionState, selector, deltaX, deltaY, steps = 8) {
+  const escaped = JSON.stringify(selector);
+  const point = await evaluateOnTarget(runtime, sessionState, `(() => {
+    const element = document.querySelector(${escaped});
+    if (!element) {
+      return { ok: false, reason: "not_found", selector: ${escaped} };
+    }
+    const rect = element.getBoundingClientRect();
+    return {
+      ok: true,
+      selector: ${escaped},
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    };
+  })()`);
+  assertCondition(point?.ok, `Could not resolve drag point for ${selector}.`, point);
+
+  const { activeCdp, sessionId } = getSessionRuntime(sessionState, runtime.cdp);
+  await activeCdp.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: point.x,
+    y: point.y,
+    button: "left",
+    buttons: 0,
+    clickCount: 0,
+  }, sessionId);
+  await activeCdp.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: point.x,
+    y: point.y,
+    button: "left",
+    buttons: 1,
+    clickCount: 1,
+  }, sessionId);
+  for (let step = 1; step <= steps; step += 1) {
+    const nextX = point.x + (deltaX * step) / steps;
+    const nextY = point.y + (deltaY * step) / steps;
+    await activeCdp.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: nextX,
+      y: nextY,
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+    }, sessionId);
+    await delay(16);
+  }
+  await activeCdp.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: point.x + deltaX,
+    y: point.y + deltaY,
+    button: "left",
+    buttons: 0,
+    clickCount: 1,
+  }, sessionId);
+}
+
 async function navigateHash(runtime, sessionState, hash) {
   const escaped = JSON.stringify(hash);
   const result = await evaluateOnTarget(runtime, sessionState, `(() => {
@@ -312,6 +373,7 @@ async function readToolbarMetrics(runtime, sessionState) {
       collapsed: toolbar.dataset.collapsed || null,
       hidden: toolbar.hidden,
       toolbar: {
+        left: toolbarRect.left,
         top: toolbarRect.top,
         rightInset: viewportWidth - toolbarRect.right,
         width: toolbarRect.width,
@@ -404,6 +466,9 @@ function assertToolbarMetrics(metrics, {
   expectedButtonText,
   expectedBody = false,
   expectedCollapsed,
+  skipPinnedCornerAssertions = false,
+  expectedToolbarLeftRange,
+  expectedToolbarTopRange,
 } = {}) {
   assertCondition(metrics?.present, "Toolbar is missing.", metrics);
   if (expectedState) {
@@ -433,9 +498,27 @@ function assertToolbarMetrics(metrics, {
   } else {
     assertCondition(metrics.body.display === "none", "Selection panel body should be hidden.", metrics);
   }
-  assertCondition(metrics.toolbar.top <= 28, "Toolbar is not pinned near the top edge.", metrics);
-  assertCondition(metrics.toolbar.rightInset >= 16, "Toolbar is too close to the right edge.", metrics);
-  assertCondition(metrics.toolbar.rightInset <= 24, "Toolbar is not pinned near the right edge.", metrics);
+  if (!skipPinnedCornerAssertions) {
+    assertCondition(metrics.toolbar.top <= 28, "Toolbar is not pinned near the top edge.", metrics);
+    assertCondition(metrics.toolbar.rightInset >= 16, "Toolbar is too close to the right edge.", metrics);
+    assertCondition(metrics.toolbar.rightInset <= 24, "Toolbar is not pinned near the right edge.", metrics);
+  }
+  if (expectedToolbarLeftRange) {
+    assertCondition(
+      metrics.toolbar.left >= expectedToolbarLeftRange[0] &&
+      metrics.toolbar.left <= expectedToolbarLeftRange[1],
+      `Toolbar left position drifted outside the expected range ${expectedToolbarLeftRange.join("..")}.`,
+      metrics,
+    );
+  }
+  if (expectedToolbarTopRange) {
+    assertCondition(
+      metrics.toolbar.top >= expectedToolbarTopRange[0] &&
+      metrics.toolbar.top <= expectedToolbarTopRange[1],
+      `Toolbar top position drifted outside the expected range ${expectedToolbarTopRange.join("..")}.`,
+      metrics,
+    );
+  }
   assertCondition(metrics.toolbar.width <= 360, "Toolbar is wider than the intended panel width.", metrics);
   assertCondition(metrics.toolbar.scrollHeight <= metrics.toolbar.height + 1, "Toolbar content overflowed vertically.", metrics);
   assertCondition(metrics.layout.buttonFitsWithinToolbar, "Inspect button overflowed the toolbar width.", metrics);
@@ -794,6 +877,31 @@ async function main() {
       expectedBody: true,
       expectedCollapsed: false,
     }));
+
+    logStep("Dragging the toolbar away from the top-right corner");
+    await dragSelectorByOffset(runtime, sessionState, '[data-chrome-inspect-toolbar] [data-role="row"]', -140, 96);
+    results.push(await recordStep(runtime, sessionState, outputDir, "18-toolbar-dragged", {
+      expectedState: "idle_selected",
+      expectedButtonText: "Press this button to inspect",
+      expectedBody: true,
+      expectedCollapsed: false,
+      skipPinnedCornerAssertions: true,
+      expectedToolbarLeftRange: [980, 1120],
+      expectedToolbarTopRange: [90, 150],
+    }));
+
+    logStep("Reloading after toolbar drag to confirm the position persists");
+    await reloadTarget(runtime, sessionState);
+    results.push(await recordStep(runtime, sessionState, outputDir, "19-toolbar-dragged-after-reload", {
+      expectedState: "idle_selected",
+      expectedButtonText: "",
+      expectedBody: false,
+      expectedCollapsed: true,
+      skipPinnedCornerAssertions: true,
+      expectedToolbarLeftRange: [980, 1120],
+      expectedToolbarTopRange: [90, 150],
+    }));
+
     await closeInspectRuntime(runtime.cdp, runtime.state);
     runtimeClosed = true;
     runtime = await connectInspectRuntime({ debugUrl, startupUrl });

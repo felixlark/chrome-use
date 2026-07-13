@@ -293,6 +293,7 @@ inspect 面板是一个持久化的浏览器层 affordance，而 capture 是叠�
 - 如果操作者选择了一个元素，inspect mode 应立即停止，面板进入 saved-selection 状态。
 - 在 saved-selection 状态下，同一个面板中应显示 `Selected`、`Content`、`Page`、`Element`。
 - 在 saved-selection 或 idle 状态下，再次点击 `Press this button to inspect` 必须立即重新进入 inspect mode，不能要求第二次点击，也不能要求先新建 workflow 才让 UI 响应。
+- 操作者应能把面板拖离被遮挡的区域，并且同一页面目标在 reload 后应保持该位置。
 - 面板必须跨同标签导航、刷新和同文档导航持续存在。
 - 最近一次成功选择必须被持久化，这样即便原始等待超时，下一回合仍可恢复它。
 - 选择历史也必须追加写入 `events/selection-history.jsonl`，不能只覆盖 `current-selection.json`。

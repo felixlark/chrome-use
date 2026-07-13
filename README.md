@@ -295,6 +295,7 @@ The inspect panel is a persistent browser-level affordance, while capture is a o
 - If the operator selects an element, inspect mode stops immediately and the panel moves to a saved-selection state.
 - In the saved-selection state, the panel should show `Selected`, `Content`, `Page`, and `Element` in the same panel body.
 - In the saved-selection or idle state, clicking `Press this button to inspect` must re-enter inspect mode without requiring a second click or a brand-new workflow just to make the UI responsive.
+- The operator should be able to drag the panel away from obstructed UI, and that position should persist across reloads for the same page target.
 - Panel presence should persist across same-tab navigation, reloads, and same-document navigation.
 - The most recent successful selection should be persisted so the next turn can recover it if the original capture timed out.
 - Selection history should also be appended to `events/selection-history.jsonl` so at least one prior selection remains inspectable like a clipboard trail.

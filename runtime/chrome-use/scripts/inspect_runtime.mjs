@@ -1381,6 +1381,7 @@ async function updatePageToolbarState(cdp, sessionState, options = {}) {
       captureActive: !!options.captureActive,
       selectedDetails: options.selectedDetails || null,
       collapsed: options.collapsed ?? null,
+      toolbarPosition: options.toolbarPosition,
     },
   );
   try {
@@ -1497,6 +1498,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
   captureActive = true,
   selectedDetails = null,
   collapsed = null,
+  toolbarPosition = undefined,
 } = {}) {
   return `(() => {
     const key = "__chromeInspectAgentState";
@@ -1523,6 +1525,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
     const state = window[key] || (window[key] = {});
     const sameWorkflow = state.workflowId === ${JSON.stringify(workflowId)} &&
       state.captureToken === ${JSON.stringify(captureToken)};
+    const requestedToolbarPosition = ${toolbarPosition === undefined ? "undefined" : JSON.stringify(toolbarPosition)};
     const incomingSelectedDetails = ${JSON.stringify(selectedDetails || {
       selected: "",
       content: "",
@@ -1530,6 +1533,18 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
       element: "",
     })};
     const requestedCollapsed = ${collapsed === null ? "null" : (collapsed ? "true" : "false")};
+    state.normalizeToolbarPosition = (value) => {
+      if (!value || typeof value !== "object") {
+        return null;
+      }
+      const left = Number(value.left);
+      const top = Number(value.top);
+      if (!Number.isFinite(left) || !Number.isFinite(top)) {
+        return null;
+      }
+      return { left, top };
+    };
+    const normalizedRequestedToolbarPosition = state.normalizeToolbarPosition(requestedToolbarPosition);
     state.workflowId = ${JSON.stringify(workflowId)};
     state.captureToken = ${JSON.stringify(captureToken)};
     state.captureActive = ${captureActive ? "true" : "false"};
@@ -1539,6 +1554,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
       state.selectedDetails = incomingSelectedDetails || { selected: "", content: "", page: "", element: "" };
       state.toolbarState = initialState;
       state.toolbarCollapsed = requestedCollapsed === null ? initialState === states.idle : !!requestedCollapsed;
+      state.toolbarPosition = normalizedRequestedToolbarPosition;
       state.cancelled = initialState === states.exited;
       state.armedAt = Date.now();
     } else {
@@ -1552,6 +1568,9 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
       state.toolbarCollapsed = requestedCollapsed === null
         ? (typeof state.toolbarCollapsed === "boolean" ? state.toolbarCollapsed : initialState === states.idle)
         : !!requestedCollapsed;
+      state.toolbarPosition = requestedToolbarPosition === undefined
+        ? (state.toolbarPosition || null)
+        : normalizedRequestedToolbarPosition;
       state.cancelled = initialState === states.exited;
       state.armedAt = state.armedAt || Date.now();
     }
@@ -1574,11 +1593,23 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
     state.heartbeatTimer = null;
     state.toolbarObserver = null;
     state.domReadyHandler = null;
+    state.positionSyncFrame = null;
+    state.handleToolbarMouseDown = null;
+    state.handleWindowMouseMove = null;
+    state.handleWindowMouseUp = null;
+    state.handleToolbarClickCapture = null;
+    state.handleViewportResize = null;
     state.handleMove = null;
     state.handleClick = null;
     state.handleToggleClick = null;
     state.previousCursor = document.documentElement.style.cursor || "";
+    state.previousUserSelect = document.documentElement.style.userSelect || "";
     state.listenerInstalled = false;
+    state.windowDragListenersInstalled = false;
+    state.dragSession = null;
+    state.isDraggingToolbar = false;
+    state.suppressToolbarClickUntil = 0;
+    state.dragThresholdPx = 4;
 
     state.removeHighlight = () => {
       if (state.highlighted) {
@@ -1588,6 +1619,82 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
       state.highlighted = null;
       state.previousOutline = "";
       state.previousOutlineOffset = "";
+    };
+
+    state.getViewportWidth = () => document.documentElement.clientWidth || window.innerWidth || 0;
+    state.getViewportHeight = () => document.documentElement.clientHeight || window.innerHeight || 0;
+    state.measureToolbarBox = () => {
+      if (!state.toolbar || !state.toolbar.isConnected) {
+        return { width: 0, height: 0 };
+      }
+      const rect = state.toolbar.getBoundingClientRect();
+      return {
+        width: rect.width || state.toolbar.offsetWidth || 0,
+        height: rect.height || state.toolbar.offsetHeight || 0,
+      };
+    };
+    state.resolvePinnedToolbarPosition = (size = null) => {
+      const margin = 20;
+      const box = size || state.measureToolbarBox();
+      return {
+        left: Math.max(margin, state.getViewportWidth() - box.width - margin),
+        top: margin,
+      };
+    };
+    state.clampToolbarPosition = (position, size = null) => {
+      const candidate = state.normalizeToolbarPosition(position);
+      if (!candidate) {
+        return null;
+      }
+      const box = size || state.measureToolbarBox();
+      const margin = 12;
+      const maxLeft = Math.max(margin, state.getViewportWidth() - box.width - margin);
+      const maxTop = Math.max(margin, state.getViewportHeight() - box.height - margin);
+      return {
+        left: Math.min(Math.max(candidate.left, margin), maxLeft),
+        top: Math.min(Math.max(candidate.top, margin), maxTop),
+      };
+    };
+    state.applyToolbarPosition = () => {
+      if (!state.toolbar || !state.toolbar.isConnected) {
+        return;
+      }
+      if (!state.toolbarPosition) {
+        state.toolbar.style.left = "";
+        state.toolbar.style.top = "20px";
+        state.toolbar.style.right = "20px";
+        state.toolbar.style.bottom = "auto";
+        return;
+      }
+      const size = state.measureToolbarBox();
+      const nextPosition = state.clampToolbarPosition(state.toolbarPosition, size);
+      if (!nextPosition) {
+        return;
+      }
+      state.toolbarPosition = nextPosition;
+      state.toolbar.style.left = nextPosition.left + "px";
+      state.toolbar.style.top = nextPosition.top + "px";
+      state.toolbar.style.right = "auto";
+      state.toolbar.style.bottom = "auto";
+    };
+    state.setToolbarDragging = (dragging) => {
+      state.isDraggingToolbar = !!dragging;
+      if (state.toolbar) {
+        state.toolbar.dataset.dragging = state.isDraggingToolbar ? "true" : "false";
+      }
+      document.documentElement.style.userSelect = state.isDraggingToolbar ? "none" : (state.previousUserSelect || "");
+    };
+    state.scheduleToolbarPositionSync = () => {
+      if (!state.toolbar || !state.toolbar.isConnected) {
+        return;
+      }
+      if (state.positionSyncFrame) {
+        window.cancelAnimationFrame(state.positionSyncFrame);
+      }
+      state.positionSyncFrame = window.requestAnimationFrame(() => {
+        state.positionSyncFrame = null;
+        state.applyToolbarPosition();
+      });
     };
 
     state.ensureStyle = () => {
@@ -1612,6 +1719,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
   color: #fff;
   font: 600 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   box-sizing: border-box;
+  touch-action: none;
 }
 [data-chrome-inspect-toolbar] [data-role="row"] {
   display: flex;
@@ -1619,6 +1727,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
   align-items: center;
   gap: 8px;
   width: 100%;
+  cursor: grab;
 }
 [data-chrome-inspect-toolbar][data-state="idle_selected"][data-collapsed="false"] [data-role="row"] {
   width: min(304px, calc(100vw - 40px));
@@ -1634,9 +1743,14 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
   backdrop-filter: blur(12px);
   box-sizing: border-box;
+  cursor: grab;
 }
 [data-chrome-inspect-toolbar][data-state="idle_selected"][data-collapsed="false"] [data-role="body"] {
   display: grid;
+}
+[data-chrome-inspect-toolbar][data-dragging="true"],
+[data-chrome-inspect-toolbar][data-dragging="true"] * {
+  cursor: grabbing !important;
 }
 [data-chrome-inspect-toolbar] [data-role="label"] {
   color: rgba(255, 255, 255, 0.58);
@@ -1674,6 +1788,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
   padding: 0 12px;
   background: rgba(255, 102, 0, 0.96);
   border-color: rgba(255, 255, 255, 0.12);
+  cursor: grab;
 }
 [data-chrome-inspect-toolbar][data-collapsed="true"] button[data-role="inspect"] {
   width: 36px;
@@ -1779,6 +1894,11 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
           mode: toolbarState,
           cancelled: toolbarState === states.exited,
           captureActive: !!state.captureActive,
+          collapsed: !!state.toolbarCollapsed,
+          toolbarPosition: state.toolbarPosition ? {
+            left: state.toolbarPosition.left,
+            top: state.toolbarPosition.top,
+          } : null,
           reason: reason || "unknown",
         }));
       } catch {}
@@ -1819,6 +1939,8 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
           ? "Inspecting"
           : (state.toolbarCollapsed ? "" : "Press this button to inspect");
       }
+      state.applyToolbarPosition();
+      state.scheduleToolbarPositionSync();
     };
 
     state.updateHeartbeat = () => {
@@ -1837,6 +1959,10 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
         cancelled: toolbarState === states.exited,
         mode: toolbarState,
         collapsed: !!state.toolbarCollapsed,
+        toolbarPosition: state.toolbarPosition ? {
+          left: state.toolbarPosition.left,
+          top: state.toolbarPosition.top,
+        } : null,
       };
     };
 
@@ -1915,6 +2041,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
         (document.body || document.documentElement).appendChild(toolbar);
       }
       state.toolbar = toolbar;
+      state.toolbar.dataset.dragging = state.isDraggingToolbar ? "true" : "false";
       state.toolbarBody = toolbar.querySelector('[data-role="body"]');
       state.toolbarToggleButton = toolbar.querySelector('button[data-chrome-inspect-action="toggle"]');
       state.toolbarCloseButton = toolbar.querySelector('button[data-chrome-inspect-action="close"]');
@@ -1943,6 +2070,87 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
         };
         state.toolbarCloseButton.addEventListener("click", state.handleCloseClick, true);
         state.toolbarCloseButton.__chromeInspectBound = true;
+      }
+      if (!toolbar.__chromeInspectDragBound) {
+        state.handleToolbarMouseDown = (event) => {
+          const target = event.target instanceof Element ? event.target : null;
+          if (!target || !state.isToolbarElement(target)) {
+            return;
+          }
+          if (typeof event.button === "number" && event.button !== 0) {
+            return;
+          }
+          const rect = toolbar.getBoundingClientRect();
+          state.dragSession = {
+            startX: event.clientX,
+            startY: event.clientY,
+            startLeft: rect.left,
+            startTop: rect.top,
+            moved: false,
+          };
+        };
+        state.handleWindowMouseMove = (event) => {
+          if (!state.dragSession) {
+            return;
+          }
+          const deltaX = event.clientX - state.dragSession.startX;
+          const deltaY = event.clientY - state.dragSession.startY;
+          if (!state.dragSession.moved) {
+            if (
+              Math.abs(deltaX) < state.dragThresholdPx &&
+              Math.abs(deltaY) < state.dragThresholdPx
+            ) {
+              return;
+            }
+            state.dragSession.moved = true;
+            state.setToolbarDragging(true);
+          }
+          state.toolbarPosition = state.clampToolbarPosition({
+            left: state.dragSession.startLeft + deltaX,
+            top: state.dragSession.startTop + deltaY,
+          });
+          state.applyToolbarPosition();
+          state.updateHeartbeat();
+          event.preventDefault();
+        };
+        state.handleWindowMouseUp = () => {
+          if (!state.dragSession) {
+            return;
+          }
+          const moved = !!state.dragSession.moved;
+          state.dragSession = null;
+          state.setToolbarDragging(false);
+          if (moved) {
+            state.suppressToolbarClickUntil = Date.now() + 250;
+            state.updateHeartbeat();
+            state.reportToolbarState("drag_end");
+          }
+        };
+        state.handleToolbarClickCapture = (event) => {
+          if (Date.now() >= state.suppressToolbarClickUntil) {
+            return;
+          }
+          const target = event.target instanceof Element ? event.target : null;
+          if (!target || !state.isToolbarElement(target)) {
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          if (typeof event.stopImmediatePropagation === "function") {
+            event.stopImmediatePropagation();
+          }
+        };
+        state.handleViewportResize = () => {
+          state.applyToolbarPosition();
+          state.updateHeartbeat();
+        };
+        toolbar.addEventListener("mousedown", state.handleToolbarMouseDown, true);
+        toolbar.addEventListener("click", state.handleToolbarClickCapture, true);
+        window.addEventListener("mousemove", state.handleWindowMouseMove, true);
+        window.addEventListener("mouseup", state.handleWindowMouseUp, true);
+        window.addEventListener("resize", state.handleViewportResize);
+        state.windowDragListenersInstalled = true;
+        toolbar.__chromeInspectDragBound = true;
       }
       state.updateToolbar();
       return toolbar;
@@ -2042,11 +2250,11 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
         }
       } else {
         root.style.cursor = state.previousCursor || "";
-        if (state.listenerInstalled) {
-          document.removeEventListener("mousemove", state.handleMove, true);
-          document.removeEventListener("click", state.handleClick, true);
-          state.listenerInstalled = false;
-        }
+      if (state.listenerInstalled) {
+        document.removeEventListener("mousemove", state.handleMove, true);
+        document.removeEventListener("click", state.handleClick, true);
+        state.listenerInstalled = false;
+      }
         state.removeHighlight();
       }
     };
@@ -2076,24 +2284,41 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
         document.removeEventListener("mousemove", state.handleMove, true);
         document.removeEventListener("click", state.handleClick, true);
       }
+      if (state.toolbar && state.handleToolbarMouseDown) {
+        state.toolbar.removeEventListener("mousedown", state.handleToolbarMouseDown, true);
+      }
+      if (state.toolbar && state.handleToolbarClickCapture) {
+        state.toolbar.removeEventListener("click", state.handleToolbarClickCapture, true);
+      }
       if (state.toolbarToggleButton && state.handleToggleClick) {
         state.toolbarToggleButton.removeEventListener("click", state.handleToggleClick, true);
       }
       if (state.toolbarCloseButton && state.handleCloseClick) {
         state.toolbarCloseButton.removeEventListener("click", state.handleCloseClick, true);
       }
+      if (state.windowDragListenersInstalled) {
+        window.removeEventListener("mousemove", state.handleWindowMouseMove, true);
+        window.removeEventListener("mouseup", state.handleWindowMouseUp, true);
+        window.removeEventListener("resize", state.handleViewportResize);
+      }
       if (state.heartbeatTimer) window.clearInterval(state.heartbeatTimer);
+      if (state.positionSyncFrame) window.cancelAnimationFrame(state.positionSyncFrame);
       if (state.toolbarObserver) state.toolbarObserver.disconnect();
       if (state.domReadyHandler) document.removeEventListener("DOMContentLoaded", state.domReadyHandler);
       state.removeHighlight();
       if (state.toolbar && state.toolbar.isConnected) state.toolbar.remove();
       if (state.styleElement && state.styleElement.isConnected) state.styleElement.remove();
       document.documentElement.style.cursor = state.previousCursor || "";
+      document.documentElement.style.userSelect = state.previousUserSelect || "";
       state.listenerInstalled = false;
+      state.windowDragListenersInstalled = false;
+      state.dragSession = null;
+      state.isDraggingToolbar = false;
       state.toolbar = null;
       state.toolbarCloseButton = null;
       state.toolbarObserver = null;
       state.heartbeatTimer = null;
+      state.positionSyncFrame = null;
       state.styleElement = null;
       state.domReadyHandler = null;
     };
@@ -2350,7 +2575,8 @@ async function readPageCaptureHeartbeat(cdp, sessionState, workflowId) {
             cancelled: !!s.cancelled,
             armedAt: s.armedAt || null,
             captureToken: s.captureToken || null,
-            listenerInstalled: !!s.listenerInstalled
+            listenerInstalled: !!s.listenerInstalled,
+            toolbarPosition: s.toolbarPosition || null,
           };
         })()`,
         returnByValue: true,
@@ -2797,6 +3023,7 @@ async function awaitWorkflowSelection(state, cdp, workflowId, waitForSelectionMs
           captureToken: heartbeat.captureToken || state.captureMetaByTargetId.get(heartbeatTargetId)?.captureToken || null,
           mode: heartbeat.heartbeat?.mode || (heartbeat.cancelled ? "exited" : "inspecting"),
           cancelled: !!heartbeat.cancelled,
+          toolbarPosition: heartbeat.toolbarPosition || heartbeat.heartbeat?.toolbarPosition || state.captureMetaByTargetId.get(heartbeatTargetId)?.toolbarPosition || null,
         });
       }
       if (heartbeat.selected && heartbeatTargetId) {
@@ -3269,6 +3496,7 @@ async function attachPageTarget(cdp, targetInfo, state) {
         collapsed: typeof signal.collapsed === "boolean"
           ? signal.collapsed
           : state.captureMetaByTargetId.get(targetInfo.targetId)?.collapsed,
+        toolbarPosition: signal.toolbarPosition || state.captureMetaByTargetId.get(targetInfo.targetId)?.toolbarPosition || null,
       });
       void syncOverlayModeForToolbarSignal(cdp, sessionState, nextMeta).catch((err) => {
         state.lastObservedError = `overlay sync failed for ${targetInfo.targetId}: ${err?.message || err}`;
@@ -3476,19 +3704,24 @@ async function applyToolbarStateForTarget(cdp, state, targetId, {
   captureActive = false,
   selectedDetails = null,
   collapsed = null,
+  toolbarPosition = undefined,
   reason = "manual",
 } = {}) {
   const sessionState = state.targetsById.get(targetId);
   if (!sessionState) {
     return null;
   }
+  const previousMeta = state.captureMetaByTargetId.get(targetId) || {};
+  const nextToolbarPosition = toolbarPosition === undefined
+    ? (previousMeta.toolbarPosition ?? null)
+    : toolbarPosition;
   const toolbar = await installPageSelectionCapture(
     cdp,
     state,
     sessionState,
     workflowId,
     captureToken,
-    { mode, cancelled, captureActive, selectedDetails, collapsed },
+    { mode, cancelled, captureActive, selectedDetails, collapsed, toolbarPosition: nextToolbarPosition },
   );
   const meta = updateCaptureMetaForTarget(state, targetId, {
     workflowId,
@@ -3499,6 +3732,7 @@ async function applyToolbarStateForTarget(cdp, state, targetId, {
     captureActive,
     selectedDetails,
     collapsed,
+    toolbarPosition: nextToolbarPosition,
   });
   logSignal("page_toolbar_synced", {
     targetId,
@@ -3509,6 +3743,7 @@ async function applyToolbarStateForTarget(cdp, state, targetId, {
     captureActive,
     selectedDetails,
     collapsed,
+    toolbarPosition: nextToolbarPosition,
     reason,
   });
   return meta;
@@ -3539,6 +3774,7 @@ async function syncToolbarStateFromMeta(cdp, state, targetId, reason = "sync_fro
     captureActive: !!meta.captureActive,
     selectedDetails: meta.selectedDetails || null,
     collapsed: meta.collapsed ?? true,
+    toolbarPosition: meta.toolbarPosition ?? null,
     reason,
   });
 }
@@ -3583,19 +3819,24 @@ async function armCaptureForTarget(cdp, state, targetId, {
   mode = "idle",
   cancelled = false,
   collapsed = null,
+  toolbarPosition = undefined,
   reason = "manual",
 } = {}) {
   const sessionState = state.targetsById.get(targetId);
   if (!sessionState || !workflowId || !captureToken) {
     return null;
   }
+  const previousMeta = state.captureMetaByTargetId.get(targetId) || {};
+  const nextToolbarPosition = toolbarPosition === undefined
+    ? (previousMeta.toolbarPosition ?? null)
+    : toolbarPosition;
   const armResult = await installPageSelectionCapture(
     cdp,
     state,
     sessionState,
     workflowId,
     captureToken,
-    { mode, cancelled, collapsed },
+    { mode, cancelled, collapsed, toolbarPosition: nextToolbarPosition },
   );
   const meta = updateCaptureMetaForTarget(state, targetId, {
     workflowId,
@@ -3605,6 +3846,7 @@ async function armCaptureForTarget(cdp, state, targetId, {
     cancelled,
     captureActive: mode === "inspecting",
     collapsed,
+    toolbarPosition: nextToolbarPosition,
   });
   logSignal("page_capture_armed", {
     workflowId,
@@ -3614,6 +3856,7 @@ async function armCaptureForTarget(cdp, state, targetId, {
     mode,
     cancelled,
     collapsed,
+    toolbarPosition: nextToolbarPosition,
   });
   return meta;
 }
@@ -3632,6 +3875,7 @@ async function rearmCaptureForTargetIfActive(cdp, state, targetId, reason) {
       captureActive: !!fallbackMeta.captureActive,
       selectedDetails: fallbackMeta.selectedDetails || null,
       collapsed: shouldCollapse ? true : (fallbackMeta.collapsed ?? null),
+      toolbarPosition: fallbackMeta.toolbarPosition ?? null,
       reason,
     });
   }
@@ -3645,6 +3889,7 @@ async function rearmCaptureForTargetIfActive(cdp, state, targetId, reason) {
     mode: meta.mode === "idle_selected" ? "idle_selected" : "idle",
     cancelled: !!meta.cancelled,
     collapsed: meta.mode === "idle_selected" ? false : true,
+    toolbarPosition: meta.toolbarPosition ?? null,
     reason,
   }).finally(() => {
     state.rearmPendingByTargetId.delete(targetId);
