@@ -71,8 +71,8 @@ We just shipped `chrome-inspect` in `chrome-use`.
 - full inspect + auth workflow in one managed Chrome for Testing session
 - direct CDP runtime with an isolated browser-data dir, so the flow stays fast and predictable
 
-Try it, star the repo, and tell us what to build next: https://github.com/longbiaochen/chrome-use
+Try it, star the repo, and tell us what to build next: https://github.com/felixlark/chrome-use
 
 ### Chinese template
 
-`chrome-inspect` 已经在 `chrome-use` 里正式发布：现在浏览器里的点选可以更快回到 agent 手里，直接变成可编辑的 DOM 上下文，而且 `chrome-inspect` 和 `chrome-auth` 会在同一个托管的 Chrome for Testing 会话里跑完整流程，既快又稳，欢迎试用、star、follow，也欢迎直接来提 issue 和 PR：https://github.com/longbiaochen/chrome-use
+`chrome-inspect` 已经在 `chrome-use` 里正式发布：现在浏览器里的点选可以更快回到 agent 手里，直接变成可编辑的 DOM 上下文，而且 `chrome-inspect` 和 `chrome-auth` 会在同一个托管的 Chrome for Testing 会话里跑完整流程，既快又稳，欢迎试用、star、follow，也欢迎直接来提 issue 和 PR：https://github.com/felixlark/chrome-use

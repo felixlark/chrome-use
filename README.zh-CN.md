@@ -109,7 +109,7 @@ chrome-use 刻意比这些工具更窄。窄反而是优势：它不是试图包
 统一安装入口：
 
 ```bash
-git clone https://github.com/longbiaochen/chrome-use.git
+git clone https://github.com/felixlark/chrome-use.git
 cd chrome-use
 bash install/install.sh
 ```

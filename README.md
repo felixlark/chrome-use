@@ -109,7 +109,7 @@ Both public skills may be invoked explicitly or implicitly.
 Unified installer:
 
 ```bash
-git clone https://github.com/longbiaochen/chrome-use.git
+git clone https://github.com/felixlark/chrome-use.git
 cd chrome-use
 bash install/install.sh
 ```
