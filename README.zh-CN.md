@@ -234,7 +234,7 @@ export CHROME_USE_DEBUG_PORT="9223"
 ```
 
 `CHROME_USE_DEFAULT_WEBAPP_URL` 会在 `about:blank` 之前作为可选 URL fallback。
-对于 `/chrome-inspect`，可以设置 `CHROME_INSPECT_PROJECT_ROOT`（例如 `/Users/longbiao/Projects/home-page`），让辅助脚本自动定位该项目的 docs web app 入口。
+对于 `/chrome-inspect`，可以设置 `CHROME_INSPECT_PROJECT_ROOT`（例如 `~/Projects/home-page`），让辅助脚本自动定位该项目的 docs web app 入口。
 如果启用了 inspect auto-start 且缺少该环境变量，共享运行时会先从当前工作目录或 git root 推断项目根目录，再决定是否退回 `about:blank`。
 当设置 `CHROME_INSPECT_AUTO_START_WEBAPP=1` 时，`open_url.sh` 也会在附加 Chrome 前尝试启动对应的本地 web app。
 这条 auto-start 路径仅在目标 URL 被解析为对应本地项目的 `localhost` 或 `127.0.0.1` 地址时生效。

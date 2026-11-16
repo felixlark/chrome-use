@@ -2,7 +2,7 @@
 
 ## Repo Scope
 
-- Owner/escalation: Longbiao for the local runtime and install surface.
+- Owner/escalation: felixlark for the local runtime and install surface.
 - This repo owns the CDP runtime for explicit target-bound handoff; runtime checks and commands in this file are internal maintenance only.
 - Outside this repo, route ordinary Codex Web app preview, interaction, and visual acceptance through the official Chrome plugin or in-app browser according to the interaction type.
 - Current runtime contract: managed profile data under `~/.chrome-use/browser-data/<channel-or-version>` over CDP; do not attach to the user's daily Chrome profile or resurrect the old app shim.
