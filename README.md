@@ -244,7 +244,7 @@ Manual user entrypoint on macOS:
 That wrapper bootstraps the managed `Chrome for Testing` browser into the expected CDP-attached state and reuses the same runtime that `chrome-inspect` and `chrome-auth` attach to later.
 
 `CHROME_USE_DEFAULT_WEBAPP_URL` is used as optional URL fallback before `about:blank`.
-For `/chrome-inspect`, set `CHROME_INSPECT_PROJECT_ROOT` (for example `/Users/longbiao/Projects/home-page`) to let the helper auto-resolve the project's docs web app entry.
+For `/chrome-inspect`, set `CHROME_INSPECT_PROJECT_ROOT` (for example `~/Projects/home-page`) to let the helper auto-resolve the project's docs web app entry.
 If inspect auto-start is enabled and that env var is missing, the shared runtime now infers the project root from the current working directory or git root before using `about:blank`.
 When `CHROME_INSPECT_AUTO_START_WEBAPP=1` is set, `open_url.sh` will also try to start that local web app before attaching Chrome.
 That autostart path only applies when the resolved target is a matching local `localhost` or `127.0.0.1` URL for the detected project entry.
